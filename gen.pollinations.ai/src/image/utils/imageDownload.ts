@@ -183,7 +183,12 @@ export async function downloadImageAsBase64(
  * on query strings, redirects, or missing extensions — downloading here and
  * passing data URIs avoids that.
  */
-export async function toDataUri(url: string): Promise<string> {
+export async function toDataUri(url: string): Promise<{ dataUri: string; width: number; height: number } | { dataUri: string; width: null; height: null }> {
     const { buffer, mimeType } = await downloadUserImage(url);
-    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+    const dimensions = readImageDimensions(new Uint8Array(buffer), mimeType);
+    return {
+        dataUri: `data:${mimeType};base64,${buffer.toString("base64")}`,
+        width: dimensions?.width ?? null,
+        height: dimensions?.height ?? null,
+    };
 }

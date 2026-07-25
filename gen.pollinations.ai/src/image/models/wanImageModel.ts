@@ -17,7 +17,7 @@ import { HttpError } from "../httpError.ts";
 import type { ImageParams } from "../params.ts";
 import { closestByRatio } from "../utils/aspectRatio.ts";
 import { fetchUpstream } from "../utils/fetchUpstream.ts";
-import { toDataUri } from "../utils/imageDownload.ts";
+import { toDataUri, readImageDimensions } from "../utils/imageDownload.ts";
 import {
     ReplicateError,
     runReplicatePrediction,
@@ -65,12 +65,24 @@ const ASPECT_RATIO_WH: Record<string, [number, number]> = {
 function resolveSize(
     safeParams: ImageParams,
     sizes: readonly { ratio: number; size: string }[],
+    sourceWidth?: number,
+    sourceHeight?: number,
 ): string {
     const requested = safeParams.aspectRatio;
-    const [w, h] =
-        requested && requested !== "adaptive" && ASPECT_RATIO_WH[requested]
-            ? ASPECT_RATIO_WH[requested]
-            : [safeParams.width || 1024, safeParams.height || 1024];
+    
+    // If explicit aspectRatio is provided and not "adaptive", use it
+    if (requested && requested !== "adaptive" && ASPECT_RATIO_WH[requested]) {
+        const [w, h] = ASPECT_RATIO_WH[requested];
+        return closestByRatio(w, h, sizes).size;
+    }
+    
+    // If editing an image and no explicit aspectRatio, use source image aspect ratio
+    if (sourceWidth && sourceHeight) {
+        return closestByRatio(sourceWidth, sourceHeight, sizes).size;
+    }
+    
+    // Fall back to provided or default dimensions
+    const [w, h] = [safeParams.width || 1024, safeParams.height || 1024];
     return closestByRatio(w, h, sizes).size;
 }
 
@@ -91,14 +103,26 @@ export async function callWanImageAPI(
 
     // 4K is available only for pro text-to-image; pro editing and the standard
     // model cap at 2K (matches the prior DashScope pixel limits).
-    const size = resolveSize(
-        safeParams,
-        isPro && !hasImage ? WAN_SIZES_4K : WAN_SIZES_2K,
-    );
+    const sizes = isPro && !hasImage ? WAN_SIZES_4K : WAN_SIZES_2K;
 
+    // Download images and get their dimensions for aspect ratio preservation
+    let sourceWidth: number | undefined;
+    let sourceHeight: number | undefined;
     const imageInput = hasImage
-        ? await Promise.all(images.slice(0, WAN_MAX_IMAGES).map(toDataUri))
+        ? await Promise.all(images.slice(0, WAN_MAX_IMAGES).map(async (url) => {
+            const result = await toDataUri(url);
+            if (result.width !== null && result.height !== null) {
+                // Use first image's dimensions for aspect ratio preservation
+                if (!sourceWidth && !sourceHeight) {
+                    sourceWidth = result.width;
+                    sourceHeight = result.height;
+                }
+            }
+            return result.dataUri;
+        }))
         : [];
+
+    const size = resolveSize(safeParams, sizes, sourceWidth, sourceHeight);
 
     const input: Record<string, unknown> = {
         prompt,
